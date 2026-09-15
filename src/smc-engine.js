@@ -1,11 +1,8 @@
-// SMC engine scaffold. Market-data adapters and execution remain disabled until credentials are configured.
-function buildTradingPlan({ symbol, bias = 'WAIT' }) {
-  return {
-    symbol,
-    bias,
-    sequence: ['liquidity_sweep', 'mss_m3', 'retest', 'limit_entry'],
-    risk: { slPips: 50, tp1Pips: 50, tp2Pips: 100, breakEvenAfterPips: 30 },
-    executionEnabled: false
-  };
-}
-module.exports = { buildTradingPlan };
+function swings(bars,w=2){const highs=[],lows=[];for(let i=w;i<bars.length-w;i++){let hi=true,lo=true;for(let j=i-w;j<=i+w;j++){if(j===i)continue;if(bars[j].high>=bars[i].high)hi=false;if(bars[j].low<=bars[i].low)lo=false}if(hi)highs.push({i,price:bars[i].high,time:bars[i].time});if(lo)lows.push({i,price:bars[i].low,time:bars[i].time})}return{highs,lows}}
+function bias(bars){if(!bars||bars.length<20)return'NEUTRAL';const s=swings(bars),h=s.highs.slice(-2),l=s.lows.slice(-2);if(h.length<2||l.length<2)return'NEUTRAL';if(h[1].price>h[0].price&&l[1].price>l[0].price)return'BULLISH';if(h[1].price<h[0].price&&l[1].price<l[0].price)return'BEARISH';return'NEUTRAL'}
+function sweep(bars,dir){if(!bars||bars.length<12)return null;const last=bars[bars.length-1],prior=bars.slice(-12,-1);if(dir==='BULLISH'){const level=Math.min(...prior.map(x=>x.low));if(last.low<level&&last.close>level)return{type:'SELL_SIDE',level,time:last.time}}else if(dir==='BEARISH'){const level=Math.max(...prior.map(x=>x.high));if(last.high>level&&last.close<level)return{type:'BUY_SIDE',level,time:last.time}}return null}
+function mss(bars,dir){if(!bars||bars.length<15)return null;const last=bars[bars.length-1],s=swings(bars.slice(0,-1));if(dir==='BULLISH'){const h=s.highs.at(-1);if(h&&last.close>h.price)return{direction:'BULLISH',level:h.price,time:last.time}}else if(dir==='BEARISH'){const l=s.lows.at(-1);if(l&&last.close<l.price)return{direction:'BEARISH',level:l.price,time:last.time}}return null}
+function fvg(bars,dir){for(let i=bars.length-1;i>=2;i--){const a=bars[i-2],c=bars[i];if(dir==='BULLISH'&&c.low>a.high)return{low:a.high,high:c.low,time:c.time};if(dir==='BEARISH'&&c.high<a.low)return{low:c.high,high:a.low,time:c.time}}return null}
+function orderBlock(bars,dir){for(let i=bars.length-2;i>=Math.max(0,bars.length-12);i--){const b=bars[i];if(dir==='BULLISH'&&b.close<b.open)return{low:b.low,high:b.high,time:b.time};if(dir==='BEARISH'&&b.close>b.open)return{low:b.low,high:b.high,time:b.time}}return null}
+function analyze({symbol,m15,m5,m3,pipSize=0.1}){const b=bias(m15);const sw=sweep(m5,b);const ms5=mss(m5,b),ms3=mss(m3,b);const ob=orderBlock(m3,b),gap=fvg(m3,b);let stage='WAITING_M15_BIAS';if(b!=='NEUTRAL')stage='WAITING_LIQUIDITY_SWEEP';if(sw)stage='WAITING_MSS';if(sw&&(ms5||ms3))stage='WAITING_RETEST';const zone=gap||ob;let signal=null;if(sw&&(ms5||ms3)&&zone){const entry=(zone.low+zone.high)/2;const side=b==='BULLISH'?'BUY':'SELL';const sign=side==='BUY'?1:-1;signal={side,type:'LIMIT',entry:Number(entry.toFixed(3)),sl:Number((entry-sign*50*pipSize).toFixed(3)),tp1:Number((entry+sign*50*pipSize).toFixed(3)),tp2:Number((entry+sign*100*pipSize).toFixed(3)),breakEvenAfterPips:30,slPips:50,tp1Pips:50,tp2Pips:100,zone:gap?'FVG':'OB'};stage=`${side}_LIMIT_READY`}return{symbol,bias:b,stage,liquiditySweep:sw,mssM5:ms5,mssM3:ms3,orderBlock:ob,fvg:gap,signal,executionEnabled:false,updatedAt:new Date().toISOString()}}
+module.exports={analyze};
