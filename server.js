@@ -1,116 +1,17 @@
-const express = require('express');
-const path = require('path');
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-app.use(express.json({ limit: '256kb' }));
-app.use(express.static(path.join(__dirname, 'public')));
-
-const mt5State = {
-  connected: false,
-  lastSeen: null,
-  account: null,
-  symbols: {}
-};
-
-function normalizeSymbol(symbol = '') {
-  const s = String(symbol).toUpperCase();
-  if (s.includes('XAUUSD')) return 'XAUUSD';
-  if (s.includes('BTCUSD')) return 'BTCUSD';
-  return s.replace(/[^A-Z0-9]/g, '').slice(0, 24);
-}
-
-function bridgeAuth(req, res, next) {
-  const expected = process.env.MT5_BRIDGE_TOKEN;
-  if (!expected) return next(); // Safe bridge mode: ingest only, execution remains disabled.
-  const supplied = req.get('x-bridge-token');
-  if (supplied !== expected) return res.status(401).json({ ok: false, error: 'unauthorized' });
-  next();
-}
-
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'ai-trading-smc' }));
-
-app.get('/api/status', (req, res) => res.json({
-  status: 'online',
-  engine: 'SMC',
-  symbols: ['XAUUSD', 'BTCUSD'],
-  mt5: { connected: mt5State.connected, lastSeen: mt5State.lastSeen },
-  execution: {
-    enabled: false,
-    type: 'limit',
-    slPips: 50,
-    tp1Pips: 50,
-    tp2Pips: 100,
-    breakEvenAfterPips: 30
-  }
-}));
-
-app.post('/api/mt5/ohlc', bridgeAuth, (req, res) => {
-  const body = req.body || {};
-  const symbol = normalizeSymbol(body.symbol);
-  const timeframe = String(body.timeframe || '').toUpperCase();
-  const allowedTf = new Set(['M3', 'M5', 'M15']);
-
-  if (!symbol || !allowedTf.has(timeframe)) {
-    return res.status(400).json({ ok: false, error: 'symbol and timeframe (M3/M5/M15) are required' });
-  }
-
-  const numericFields = ['open', 'high', 'low', 'close'];
-  for (const field of numericFields) {
-    if (!Number.isFinite(Number(body[field]))) {
-      return res.status(400).json({ ok: false, error: `${field} must be numeric` });
-    }
-  }
-
-  const now = new Date().toISOString();
-  mt5State.connected = true;
-  mt5State.lastSeen = now;
-  mt5State.account = body.account || mt5State.account;
-  mt5State.symbols[symbol] = mt5State.symbols[symbol] || {};
-  mt5State.symbols[symbol][timeframe] = {
-    time: body.time || null,
-    open: Number(body.open),
-    high: Number(body.high),
-    low: Number(body.low),
-    close: Number(body.close),
-    tickVolume: Number(body.tickVolume || 0),
-    bid: Number(body.bid || 0),
-    ask: Number(body.ask || 0),
-    receivedAt: now
-  };
-
-  res.json({
-    ok: true,
-    symbol,
-    timeframe,
-    receivedAt: now,
-    executionEnabled: false
-  });
-});
-
-app.get('/api/mt5/status', (req, res) => {
-  const ageMs = mt5State.lastSeen ? Date.now() - new Date(mt5State.lastSeen).getTime() : null;
-  const live = ageMs !== null && ageMs < 30000;
-  res.json({
-    connected: live,
-    lastSeen: mt5State.lastSeen,
-    ageSeconds: ageMs === null ? null : Math.round(ageMs / 1000),
-    account: mt5State.account,
-    symbols: mt5State.symbols
-  });
-});
-
-app.get('/api/orders/pending', bridgeAuth, (req, res) => {
-  res.json({
-    executionEnabled: false,
-    orders: [],
-    message: 'MT5 Bridge V1 is in signal/data mode only. Automatic execution is disabled.'
-  });
-});
-
-app.post('/api/orders/report', bridgeAuth, (req, res) => {
-  res.json({ ok: true, stored: false, executionEnabled: false });
-});
-
-app.use((req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
-app.listen(PORT, '0.0.0.0', () => console.log(`AI Trading SMC running on port ${PORT}`));
+const express=require('express');const path=require('path');const https=require('https');const app=express();const PORT=process.env.PORT||3000;
+app.use(express.json({limit:'2mb'}));app.use(express.static(path.join(__dirname,'public')));
+const mt5State={connected:false,lastSeen:null,account:null,symbols:{}};const notifyState={};
+function normalizeSymbol(symbol=''){const s=String(symbol).toUpperCase();if(s.includes('XAUUSD'))return'XAUUSD';if(s.includes('BTCUSD'))return'BTCUSD';return s.replace(/[^A-Z0-9]/g,'').slice(0,24)}
+function bridgeAuth(req,res,next){const expected=process.env.MT5_BRIDGE_TOKEN;if(!expected)return next();if(req.get('x-bridge-token')!==expected)return res.status(401).json({ok:false,error:'unauthorized'});next()}
+function telegram(text){const token=process.env.TELEGRAM_BOT_TOKEN,chat=process.env.TELEGRAM_CHAT_ID;if(!token||!chat)return Promise.resolve(false);return new Promise(resolve=>{const body=JSON.stringify({chat_id:chat,text});const req=https.request({hostname:'api.telegram.org',path:`/bot${token}/sendMessage`,method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)}},r=>{r.resume();resolve(r.statusCode>=200&&r.statusCode<300)});req.on('error',()=>resolve(false));req.write(body);req.end()})}
+function maybeNotify(symbol,timeframe,data){const key=symbol+':'+timeframe;const candle=data.candles?.[data.candles.length-1];if(!candle)return;const stamp=String(candle.time);if(notifyState[key]===stamp)return;notifyState[key]=stamp;if(timeframe==='M15')telegram(`AI Trading SMC\n${symbol} MT5 CONNECTED\nM15 candle closed: ${candle.close}\nBid: ${data.bid} | Ask: ${data.ask}\nHistory: ${data.candles.length} bars\nSMC analysis: waiting`)}
+app.get('/health',(req,res)=>res.json({status:'ok',service:'ai-trading-smc'}));
+app.get('/api/status',(req,res)=>res.json({status:'online',engine:'SMC',symbols:['XAUUSD','BTCUSD'],mt5:{connected:mt5State.connected,lastSeen:mt5State.lastSeen},telegram:{configured:Boolean(process.env.TELEGRAM_BOT_TOKEN&&process.env.TELEGRAM_CHAT_ID)},execution:{enabled:false,type:'limit',slPips:50,tp1Pips:50,tp2Pips:100,breakEvenAfterPips:30}}));
+function saveTf(body,history){const symbol=normalizeSymbol(body.symbol),timeframe=String(body.timeframe||'').toUpperCase();if(!symbol||!['M3','M5','M15'].includes(timeframe))return null;const now=new Date().toISOString();mt5State.connected=true;mt5State.lastSeen=now;mt5State.account=body.account||mt5State.account;mt5State.symbols[symbol]=mt5State.symbols[symbol]||{};let d;if(history){const candles=Array.isArray(body.candles)?body.candles.slice(-300).map(c=>({time:c.time,open:Number(c.open),high:Number(c.high),low:Number(c.low),close:Number(c.close),tickVolume:Number(c.tickVolume||0)})).filter(c=>[c.open,c.high,c.low,c.close].every(Number.isFinite)):[];if(!candles.length)return null;const last=candles[candles.length-1];d={...last,bid:Number(body.bid||0),ask:Number(body.ask||0),receivedAt:now,historyBars:candles.length,candles};}else d={time:body.time||null,open:Number(body.open),high:Number(body.high),low:Number(body.low),close:Number(body.close),tickVolume:Number(body.tickVolume||0),bid:Number(body.bid||0),ask:Number(body.ask||0),receivedAt:now};mt5State.symbols[symbol][timeframe]=d;return{symbol,timeframe,data:d,now}}
+app.post('/api/mt5/ohlc',bridgeAuth,(req,res)=>{const x=saveTf(req.body||{},false);if(!x)return res.status(400).json({ok:false,error:'invalid payload'});res.json({ok:true,symbol:x.symbol,timeframe:x.timeframe,receivedAt:x.now,executionEnabled:false})});
+app.post('/api/mt5/history',bridgeAuth,(req,res)=>{const x=saveTf(req.body||{},true);if(!x)return res.status(400).json({ok:false,error:'invalid history payload'});maybeNotify(x.symbol,x.timeframe,x.data);res.json({ok:true,symbol:x.symbol,timeframe:x.timeframe,historyBars:x.data.historyBars,receivedAt:x.now,telegramConfigured:Boolean(process.env.TELEGRAM_BOT_TOKEN&&process.env.TELEGRAM_CHAT_ID),executionEnabled:false})});
+app.get('/api/mt5/status',(req,res)=>{const ageMs=mt5State.lastSeen?Date.now()-new Date(mt5State.lastSeen).getTime():null;res.json({connected:ageMs!==null&&ageMs<30000,lastSeen:mt5State.lastSeen,ageSeconds:ageMs===null?null:Math.round(ageMs/1000),account:mt5State.account,symbols:mt5State.symbols})});
+app.post('/api/telegram/test',bridgeAuth,async(req,res)=>{const configured=Boolean(process.env.TELEGRAM_BOT_TOKEN&&process.env.TELEGRAM_CHAT_ID);if(!configured)return res.status(503).json({ok:false,error:'Telegram variables not configured'});const ok=await telegram('AI Trading SMC\nTelegram notification connected successfully.');res.status(ok?200:502).json({ok})});
+app.get('/api/orders/pending',bridgeAuth,(req,res)=>res.json({executionEnabled:false,orders:[],message:'MT5 Bridge V2 history/data mode. Automatic execution disabled.'}));
+app.post('/api/orders/report',bridgeAuth,(req,res)=>res.json({ok:true,stored:false,executionEnabled:false}));
+app.use((req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));app.listen(PORT,'0.0.0.0',()=>console.log(`AI Trading SMC running on port ${PORT}`));
