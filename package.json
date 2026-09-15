@@ -1,10 +1,10 @@
 {
   "name": "ai-trading-smc",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
-  "description": "SMC market analysis dashboard",
+  "description": "SMC market analysis dashboard with persistent Trade Tracker V3",
   "main": "server.js",
   "scripts": {"start": "node server.js"},
   "engines": {"node": ">=20"},
-  "dependencies": {"express": "^5.1.0"}
+  "dependencies": {"express": "^5.1.0", "pg": "^8.16.3"}
 }
