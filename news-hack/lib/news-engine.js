@@ -49,28 +49,12 @@ export function combine(events){
   const w=valid.reduce((a,e)=>a+e.weight,0);
   const raw=sum/w;
   const score=Math.max(0,Math.min(100,50+raw/2));
-
-  if(valid.length===1){
-    const e=valid[0];
-    const signal=e.signal||'WAIT';
-    const confidence=e.strength==='STRONG'?'HIGH':e.strength==='MEDIUM'?'MEDIUM':'LOW';
-    return {
-      score:Number(score.toFixed(1)),
-      usdBias:e.usdBias||'WAIT',
-      xauBias:e.xauBias||'WAIT',
-      signal,
-      confidence,
-      components:1,
-      mode:'SINGLE_EVENT'
-    };
-  }
-
   let signal='WAIT',usdBias='NEUTRAL',xauBias='WAIT',confidence='LOW';
   if(score>=72){signal='STRONG SELL';usdBias='BULLISH';xauBias='SELL';confidence='HIGH'}
   else if(score>=58){signal='SELL';usdBias='BULLISH';xauBias='SELL';confidence='MEDIUM'}
   else if(score<=28){signal='STRONG BUY';usdBias='BEARISH';xauBias='BUY';confidence='HIGH'}
   else if(score<=42){signal='BUY';usdBias='BEARISH';xauBias='BUY';confidence='MEDIUM'}
-  return {score:Number(score.toFixed(1)),usdBias,xauBias,signal,confidence,components:valid.length,mode:'COMBINED'};
+  return {score:Number(score.toFixed(1)),usdBias,xauBias,signal,confidence,components:valid.length};
 }
 export function tradeLevels(signal,price,atr,{pip=0.10,slPips=100,rr1=1,rr2=2,lot=0.01}={}){
   const p=Number(price);
