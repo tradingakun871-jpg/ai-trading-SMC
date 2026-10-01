@@ -17,7 +17,7 @@ function parseRows(md){
     const c=line.slice(1,-1).split('|').map(x=>x.trim()); if(c.length<9) continue;
     const first=clean(c[0]); if(first&&/^(\d{1,2}:\d{2}(am|pm)|All Day|Tentative)$/i.test(first)) tm=first;
     if(clean(c[1])!=='USD') continue;
-    const impact=/red/i.test(c[2]||'')?'High':(/yel|orange/i.test(c[2]||'')?'Medium':'Low');
+    const impact=/red/i.test(c[2]||'')?'High':(/yel|orange|medium/i.test(c[2]||'')?'Medium':'Low');
     const title=clean(c[3]); if(!title||!isTracked(title)) continue;
     out.push({time:tm,currency:'USD',impact,title,actual:clean(c[6]||''),forecast:clean(c[7]||''),previous:clean(c[8]||'')});
   }
@@ -32,22 +32,39 @@ async function getGold(){
   let lastErr; for(const fn of providers){try{return await fn()}catch(e){lastErr=e}}
   throw lastErr||new Error('all gold providers failed');
 }
+function jakartaDate(d=new Date()){
+  return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit'}).format(d);
+}
+function jakartaTime(d){
+  return new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Jakarta',hour:'numeric',minute:'2-digit',hour12:true}).format(d).replace(' ','').toLowerCase();
+}
 async function getForexFactory(){
-  const urls=[
+  const readers=[
     'https://r.jina.ai/https://www.forexfactory.com/calendar?day=today',
     'https://r.jina.ai/https://www.forexfactory.com/calendar?embed=true'
   ];
-  let lastErr;
-  for(const url of urls){
+  for(const url of readers){
     try{
       const r=await fetch(url,{headers:{Accept:'text/plain'}});
-      if(!r.ok) throw new Error('FF reader '+r.status);
+      if(!r.ok) continue;
       const text=await r.text();
-      if(text.length<1000) throw new Error('FF reader short response');
-      return text;
-    }catch(e){lastErr=e}
+      if(text.length>1000) return {text,status:'LIVE_ACTUAL'};
+    }catch{}
   }
-  throw lastErr||new Error('FF unavailable');
+
+  const r=await fetch('https://nfs.faireconomy.media/ff_calendar_thisweek.json',{headers:{Accept:'application/json'}});
+  if(!r.ok) throw new Error('FF weekly '+r.status);
+  const items=await r.json();
+  const today=jakartaDate();
+  const rows=[];
+  for(const e of items){
+    if(e.country!=='USD') continue;
+    const dt=new Date(e.date);
+    if(!Number.isFinite(dt.getTime())||jakartaDate(dt)!==today) continue;
+    const impact=e.impact==='High'?'red':e.impact==='Medium'?'orange':'low';
+    rows.push(`| ${jakartaTime(dt)} | USD | ${impact} | ${String(e.title||'').replaceAll('|','/')} | | | ${e.actual||''} | ${e.forecast||''} | ${e.previous||''} |`);
+  }
+  return {text:rows.join('\n'),status:'SCHEDULE_ONLY'};
 }
 function buildGroups(events,price){
   const byTime=new Map();
@@ -58,12 +75,13 @@ async function refresh(){
   let price=cache.price;
   try{price=await getGold()}catch(e){console.error('price refresh failed',e)}
 
-  let newsStatus='OK';
+  let newsStatus=cache.newsStatus;
   let events=cache.events;
   let groups=cache.groups;
   try{
     const ff=await getForexFactory();
-    events=parseRows(ff).map(e=>({...e,...classify(e.title,e.actual,e.forecast)}));
+    newsStatus=ff.status;
+    events=parseRows(ff.text).map(e=>({...e,...classify(e.title,e.actual,e.forecast)}));
     groups=buildGroups(events,price?.price);
     const completed=groups.filter(g=>g.events.some(e=>e.actual&&e.forecast));
     for(const g of completed){
@@ -77,6 +95,6 @@ async function refresh(){
 
 app.use(express.static(path.join(__dirname,'public')));
 app.get('/health',(req,res)=>res.status(cache.price?200:503).json({ok:!!cache.price,updatedAt:cache.updatedAt,newsStatus:cache.newsStatus,price:cache.price?.price||null,source:cache.price?.source||null}));
-app.get('/api/live',async(req,res)=>{if(!cache.updatedAt) await refresh();res.json({ok:true,version:'V2 AUTO RAILWAY',source:'Forex Factory + multi-provider XAU spot',atrPips:ATR_FALLBACK,...cache});});
+app.get('/api/live',async(req,res)=>{if(!cache.updatedAt) await refresh();res.json({ok:true,version:'V2 AUTO RAILWAY',source:'Forex Factory/Fair Economy + multi-provider XAU spot',atrPips:ATR_FALLBACK,...cache});});
 app.get('/api/history',(req,res)=>res.json({ok:true,events:cache.history}));
 app.listen(PORT,()=>{console.log('XAU News Hack Railway on',PORT);refresh();setInterval(refresh,30000);});
