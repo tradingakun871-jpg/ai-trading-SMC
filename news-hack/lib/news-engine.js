@@ -19,11 +19,13 @@ export function category(title=''){
   if(/\bpce\b/.test(t)) return 'PCE';
   if(/\bgdp\b/.test(t) && !/price index/.test(t)) return 'GDP';
   if(/retail sales/.test(t)) return 'RETAIL SALES';
+  if(/ism manufacturing pmi/.test(t)) return 'ISM MANUFACTURING PMI';
+  if(/ism services pmi/.test(t)) return 'ISM SERVICES PMI';
   if(/fomc|federal funds rate|interest rate decision/.test(t)) return 'FOMC';
   return null;
 }
-const W={"CORE CPI":1.6,"CPI":1.5,"NFP":1.6,"UNEMPLOYMENT":1.4,"AHE":1.25,"CORE PPI":1.2,"PPI":1.1,"PCE":1.35,"GDP":1.0,"RETAIL SALES":1.1,"FOMC":1.7};
-const TH={"CORE CPI":0.1,"CPI":0.1,"NFP":50000,"UNEMPLOYMENT":0.1,"AHE":0.1,"CORE PPI":0.1,"PPI":0.1,"PCE":0.1,"GDP":0.2,"RETAIL SALES":0.2,"FOMC":0.25};
+const W={"CORE CPI":1.6,"CPI":1.5,"NFP":1.6,"UNEMPLOYMENT":1.4,"AHE":1.25,"CORE PPI":1.2,"PPI":1.1,"PCE":1.35,"GDP":1.0,"RETAIL SALES":1.1,"ISM MANUFACTURING PMI":1.25,"ISM SERVICES PMI":1.25,"FOMC":1.7};
+const TH={"CORE CPI":0.1,"CPI":0.1,"NFP":50000,"UNEMPLOYMENT":0.1,"AHE":0.1,"CORE PPI":0.1,"PPI":0.1,"PCE":0.1,"GDP":0.2,"RETAIL SALES":0.2,"ISM MANUFACTURING PMI":1.0,"ISM SERVICES PMI":1.0,"FOMC":0.25};
 export function isTracked(title){return !!category(title)}
 export function classify(title,actual,forecast){
   const cat=category(title), a=num(actual), f=num(forecast);
