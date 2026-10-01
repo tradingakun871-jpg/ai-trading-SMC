@@ -8,7 +8,9 @@ const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
 const ATR_FALLBACK = Number(process.env.ATR_FALLBACK || 80);
+const WEEKLY_CACHE_MS = 15 * 60 * 1000;
 let cache = { updatedAt:null, price:null, newsStatus:'INIT', actualSource:'NONE', events:[], groups:[], history:[] };
+let weeklyCache = { items:[], fetchedAt:0 };
 let refreshBusy = false;
 
 function clean(s=''){ return String(s).replace(/\s+/g,' ').trim(); }
@@ -65,11 +67,23 @@ function parseForexFactoryHtml(html){
   return events;
 }
 
-async function getWeeklyItems(){
-  const r=await fetchTimeout('https://nfs.faireconomy.media/ff_calendar_thisweek.json',{headers:{accept:'application/json'}},6000);
-  if(!r.ok) throw new Error('FF weekly '+r.status);
-  const items=await r.json();
-  return Array.isArray(items) ? items : [];
+async function getWeeklyItems(force=false){
+  const now=Date.now();
+  if(!force && weeklyCache.items.length && now-weeklyCache.fetchedAt < WEEKLY_CACHE_MS) return weeklyCache.items;
+  try{
+    const r=await fetchTimeout('https://nfs.faireconomy.media/ff_calendar_thisweek.json',{headers:{accept:'application/json','user-agent':'XAU-News-Hack/2.5'}},6000);
+    if(!r.ok) throw new Error('FF weekly '+r.status);
+    const items=await r.json();
+    if(!Array.isArray(items)) throw new Error('FF weekly invalid payload');
+    weeklyCache={items,fetchedAt:now};
+    return items;
+  }catch(err){
+    if(weeklyCache.items.length){
+      console.error('FF weekly refresh failed; using cache',err.message);
+      return weeklyCache.items;
+    }
+    throw err;
+  }
 }
 
 async function convertEventsToWib(events){
@@ -83,15 +97,16 @@ async function convertEventsToWib(events){
       if(!Number.isFinite(dt.getTime()) || jakartaDate(dt)!==today) continue;
       const title=clean(e.title||'');
       if(!title) continue;
-      byTitle.set(normTitle(title),{time:jakartaTime(dt),eventTime:new Date(dt).toISOString()});
+      byTitle.set(normTitle(title),{time:jakartaTime(dt),eventTime:dt.toISOString()});
     }
     return events.map(e=>{
       const m=byTitle.get(normTitle(e.title));
-      return m ? {...e,time:m.time,eventTime:m.eventTime,timeZone:'Asia/Jakarta'} : {...e,timeZone:'FOREX_FACTORY'};
+      if(m) return {...e,time:m.time,eventTime:m.eventTime,timeZone:'Asia/Jakarta'};
+      return {...e,time:'— WIB',eventTime:null,timeZone:'Asia/Jakarta',timeUnmapped:true};
     });
   }catch(err){
     console.error('WIB conversion failed',err.message);
-    return events;
+    return events.map(e=>({...e,time:'— WIB',eventTime:null,timeZone:'Asia/Jakarta',timeUnmapped:true}));
   }
 }
 
@@ -191,12 +206,13 @@ async function refresh(){
 
 app.use(express.static(path.join(__dirname,'public')));
 app.get('/health',(req,res)=>res.status(cache.price?200:503).json({ok:!!cache.price,updatedAt:cache.updatedAt,newsStatus:cache.newsStatus,actualSource:cache.actualSource,price:cache.price?.price||null,priceSource:cache.price?.source||null,timeZone:'Asia/Jakarta'}));
-app.get('/api/live',async(req,res)=>{ if(!cache.updatedAt) await refresh(); res.json({ok:true,version:'V2.4 FOREX FACTORY LIVE WIB',source:'Forex Factory via live HTML reader',refreshSeconds:10,timeZone:'Asia/Jakarta',atrPips:ATR_FALLBACK,...cache}); });
+app.get('/api/live',async(req,res)=>{ if(!cache.updatedAt) await refresh(); res.json({ok:true,version:'V2.5 FOREX FACTORY LIVE WIB CACHE',source:'Forex Factory via live HTML reader',refreshSeconds:10,timeZone:'Asia/Jakarta',atrPips:ATR_FALLBACK,...cache}); });
 app.get('/api/history',(req,res)=>res.json({ok:true,timeZone:'Asia/Jakarta',events:cache.history}));
 app.post('/api/refresh',async(req,res)=>{ await refresh(); res.json({ok:true,updatedAt:cache.updatedAt,newsStatus:cache.newsStatus,actualSource:cache.actualSource,timeZone:'Asia/Jakarta'}); });
 
 app.listen(PORT,()=>{
   console.log('XAU News Hack Railway on',PORT);
+  getWeeklyItems(true).catch(e=>console.error('Initial weekly preload failed',e.message));
   refresh();
   setInterval(refresh,10000);
 });
