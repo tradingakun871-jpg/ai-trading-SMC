@@ -53,7 +53,7 @@ export function combine(events){
   else if(score<=42){signal='BUY';usdBias='BEARISH';xauBias='BUY';confidence='MEDIUM'}
   return {score:Number(score.toFixed(1)),usdBias,xauBias,signal,confidence,components:valid.length};
 }
-export function tradeLevels(signal,price,atr,{pip=0.10,slPips=50,rr1=1,rr2=2,lot=0.01}={}){
+export function tradeLevels(signal,price,atr,{pip=0.10,slPips=100,rr1=1,rr2=2,lot=0.01}={}){
   const p=Number(price);
   if(!Number.isFinite(p)||!signal||signal==='WAIT') return {entry:null,slPips:null,sl:null,tp1:null,tp2:null,lot,riskUsd:null,tp1Usd:null,tp2Usd:null};
   const side=signal.includes('BUY')?'BUY':'SELL';
