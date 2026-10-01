@@ -12,11 +12,12 @@ let cache = { updatedAt:null, price:null, newsStatus:'INIT', actualSource:'NONE'
 let refreshBusy = false;
 
 function clean(s=''){ return String(s).replace(/\s+/g,' ').trim(); }
+function normTitle(s=''){ return clean(s).toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(); }
 function jakartaDate(d=new Date()){
   return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit'}).format(d);
 }
 function jakartaTime(d){
-  return new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Jakarta',hour:'numeric',minute:'2-digit',hour12:true}).format(d).replace(' ','').toLowerCase();
+  return new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Jakarta',hour:'2-digit',minute:'2-digit',hour12:false}).format(d) + ' WIB';
 }
 function ffDayParam(d=new Date()){
   const parts = new Intl.DateTimeFormat('en-US',{timeZone:'Europe/London',year:'numeric',month:'short',day:'numeric'}).formatToParts(d);
@@ -64,6 +65,36 @@ function parseForexFactoryHtml(html){
   return events;
 }
 
+async function getWeeklyItems(){
+  const r=await fetchTimeout('https://nfs.faireconomy.media/ff_calendar_thisweek.json',{headers:{accept:'application/json'}},6000);
+  if(!r.ok) throw new Error('FF weekly '+r.status);
+  const items=await r.json();
+  return Array.isArray(items) ? items : [];
+}
+
+async function convertEventsToWib(events){
+  try{
+    const items=await getWeeklyItems();
+    const today=jakartaDate();
+    const byTitle=new Map();
+    for(const e of items){
+      if(e.country!=='USD') continue;
+      const dt=new Date(e.date);
+      if(!Number.isFinite(dt.getTime()) || jakartaDate(dt)!==today) continue;
+      const title=clean(e.title||'');
+      if(!title) continue;
+      byTitle.set(normTitle(title),{time:jakartaTime(dt),eventTime:new Date(dt).toISOString()});
+    }
+    return events.map(e=>{
+      const m=byTitle.get(normTitle(e.title));
+      return m ? {...e,time:m.time,eventTime:m.eventTime,timeZone:'Asia/Jakarta'} : {...e,timeZone:'FOREX_FACTORY'};
+    });
+  }catch(err){
+    console.error('WIB conversion failed',err.message);
+    return events;
+  }
+}
+
 async function getForexFactoryJina(){
   const target=`https://www.forexfactory.com/calendar?day=${ffDayParam()}`;
   const r=await fetchTimeout(`https://r.jina.ai/${target}`,{
@@ -71,8 +102,9 @@ async function getForexFactoryJina(){
   },10000);
   if(!r.ok) throw new Error('FF Jina '+r.status);
   const html=await r.text();
-  const events=parseForexFactoryHtml(html);
+  let events=parseForexFactoryHtml(html);
   if(!events.length) throw new Error('FF Jina no tracked rows');
+  events=await convertEventsToWib(events);
   return {events,status:'LIVE_FOREX_FACTORY',source:'FOREX_FACTORY_JINA'};
 }
 
@@ -88,8 +120,11 @@ async function getForexFactoryDirect(){
         'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153 Safari/537.36'
       }},7000);
       if(!r.ok) throw new Error('FF direct '+r.status);
-      const events=parseForexFactoryHtml(await r.text());
-      if(events.length) return {events,status:'LIVE_FOREX_FACTORY',source:'FOREX_FACTORY_DIRECT'};
+      let events=parseForexFactoryHtml(await r.text());
+      if(events.length){
+        events=await convertEventsToWib(events);
+        return {events,status:'LIVE_FOREX_FACTORY',source:'FOREX_FACTORY_DIRECT'};
+      }
       throw new Error('FF direct no tracked rows');
     }catch(e){ lastErr=e; }
   }
@@ -97,9 +132,7 @@ async function getForexFactoryDirect(){
 }
 
 async function getForexFactoryWeekly(){
-  const r=await fetchTimeout('https://nfs.faireconomy.media/ff_calendar_thisweek.json',{headers:{accept:'application/json'}},6000);
-  if(!r.ok) throw new Error('FF weekly '+r.status);
-  const items=await r.json();
+  const items=await getWeeklyItems();
   const today=jakartaDate();
   const events=[];
   for(const e of items){
@@ -108,7 +141,7 @@ async function getForexFactoryWeekly(){
     if(!Number.isFinite(dt.getTime()) || jakartaDate(dt)!==today) continue;
     const title=clean(e.title||'');
     if(!title || !isTracked(title)) continue;
-    events.push({time:jakartaTime(dt),currency:'USD',impact:e.impact||'Unknown',title,actual:clean(e.actual||''),forecast:clean(e.forecast||''),previous:clean(e.previous||'')});
+    events.push({time:jakartaTime(dt),eventTime:dt.toISOString(),timeZone:'Asia/Jakarta',currency:'USD',impact:e.impact||'Unknown',title,actual:clean(e.actual||''),forecast:clean(e.forecast||''),previous:clean(e.previous||'')});
   }
   return {events,status:'FOREX_FACTORY_SCHEDULE_ONLY',source:'FOREX_FACTORY_WEEKLY'};
 }
@@ -127,7 +160,7 @@ function buildGroups(events,price){
   for(const e of events){ if(!byTime.has(e.time)) byTime.set(e.time,[]); byTime.get(e.time).push(e); }
   return [...byTime.entries()].map(([time,list])=>{
     const combined=combine(list);
-    return {time,events:list,...combined,...tradeLevels(combined.signal,price,ATR_FALLBACK)};
+    return {time,timeZone:'Asia/Jakarta',events:list,...combined,...tradeLevels(combined.signal,price,ATR_FALLBACK)};
   });
 }
 
@@ -146,7 +179,7 @@ async function refresh(){
     for(const g of completed){
       const key=`${jakartaDate()}|${g.time}|${g.signal}|${g.score}`;
       if(!cache.history.some(h=>h.key===key)){
-        cache.history.unshift({key,createdAt:new Date().toISOString(),time:g.time,score:g.score,signal:g.signal,price:price?.price??null,entry:g.entry,sl:g.sl,tp1:g.tp1,tp2:g.tp2,actualSource,events:g.events});
+        cache.history.unshift({key,createdAt:new Date().toISOString(),time:g.time,timeZone:'Asia/Jakarta',score:g.score,signal:g.signal,price:price?.price??null,entry:g.entry,sl:g.sl,tp1:g.tp1,tp2:g.tp2,actualSource,events:g.events});
       }
     }
     cache={...cache,updatedAt:new Date().toISOString(),price,newsStatus:ff.status,actualSource,events,groups,history:cache.history.slice(0,100)};
@@ -157,10 +190,10 @@ async function refresh(){
 }
 
 app.use(express.static(path.join(__dirname,'public')));
-app.get('/health',(req,res)=>res.status(cache.price?200:503).json({ok:!!cache.price,updatedAt:cache.updatedAt,newsStatus:cache.newsStatus,actualSource:cache.actualSource,price:cache.price?.price||null,priceSource:cache.price?.source||null}));
-app.get('/api/live',async(req,res)=>{ if(!cache.updatedAt) await refresh(); res.json({ok:true,version:'V2.3 FOREX FACTORY LIVE',source:'Forex Factory via live HTML reader',refreshSeconds:10,atrPips:ATR_FALLBACK,...cache}); });
-app.get('/api/history',(req,res)=>res.json({ok:true,events:cache.history}));
-app.post('/api/refresh',async(req,res)=>{ await refresh(); res.json({ok:true,updatedAt:cache.updatedAt,newsStatus:cache.newsStatus,actualSource:cache.actualSource}); });
+app.get('/health',(req,res)=>res.status(cache.price?200:503).json({ok:!!cache.price,updatedAt:cache.updatedAt,newsStatus:cache.newsStatus,actualSource:cache.actualSource,price:cache.price?.price||null,priceSource:cache.price?.source||null,timeZone:'Asia/Jakarta'}));
+app.get('/api/live',async(req,res)=>{ if(!cache.updatedAt) await refresh(); res.json({ok:true,version:'V2.4 FOREX FACTORY LIVE WIB',source:'Forex Factory via live HTML reader',refreshSeconds:10,timeZone:'Asia/Jakarta',atrPips:ATR_FALLBACK,...cache}); });
+app.get('/api/history',(req,res)=>res.json({ok:true,timeZone:'Asia/Jakarta',events:cache.history}));
+app.post('/api/refresh',async(req,res)=>{ await refresh(); res.json({ok:true,updatedAt:cache.updatedAt,newsStatus:cache.newsStatus,actualSource:cache.actualSource,timeZone:'Asia/Jakarta'}); });
 
 app.listen(PORT,()=>{
   console.log('XAU News Hack Railway on',PORT);
