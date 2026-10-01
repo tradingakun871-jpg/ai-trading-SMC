@@ -53,8 +53,17 @@ export function combine(events){
   else if(score<=42){signal='BUY';usdBias='BEARISH';xauBias='BUY';confidence='MEDIUM'}
   return {score:Number(score.toFixed(1)),usdBias,xauBias,signal,confidence,components:valid.length};
 }
-export function tradeLevels(signal,price,atr,{pip=0.01,minSL=50,rr1=1,rr2=2}={}){
-  const p=Number(price), a=Number(atr); if(!Number.isFinite(p)||!Number.isFinite(a)||!signal||signal==='WAIT') return {entry:null,slPips:null,sl:null,tp1:null,tp2:null};
-  const side=signal.includes('BUY')?'BUY':'SELL', slPips=Math.max(minSL,a), d=slPips*pip;
-  return side==='BUY'?{entry:p,slPips,sl:+(p-d).toFixed(3),tp1:+(p+d*rr1).toFixed(3),tp2:+(p+d*rr2).toFixed(3)}:{entry:p,slPips,sl:+(p+d).toFixed(3),tp1:+(p-d*rr1).toFixed(3),tp2:+(p-d*rr2).toFixed(3)};
+export function tradeLevels(signal,price,atr,{pip=0.10,slPips=50,rr1=1,rr2=2,lot=0.01}={}){
+  const p=Number(price);
+  if(!Number.isFinite(p)||!signal||signal==='WAIT') return {entry:null,slPips:null,sl:null,tp1:null,tp2:null,lot,riskUsd:null,tp1Usd:null,tp2Usd:null};
+  const side=signal.includes('BUY')?'BUY':'SELL';
+  const d=slPips*pip;
+  const usdPerPipAtLot=0.10*(lot/0.01);
+  const riskUsd=slPips*usdPerPipAtLot;
+  const tp1Usd=riskUsd*rr1;
+  const tp2Usd=riskUsd*rr2;
+  const common={entry:p,slPips,lot,riskUsd:+riskUsd.toFixed(2),tp1Usd:+tp1Usd.toFixed(2),tp2Usd:+tp2Usd.toFixed(2)};
+  return side==='BUY'
+    ? {...common,sl:+(p-d).toFixed(3),tp1:+(p+d*rr1).toFixed(3),tp2:+(p+d*rr2).toFixed(3)}
+    : {...common,sl:+(p+d).toFixed(3),tp1:+(p-d*rr1).toFixed(3),tp2:+(p-d*rr2).toFixed(3)};
 }
