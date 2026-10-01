@@ -24,15 +24,36 @@ function parseRows(md){
   return out;
 }
 async function getGold(){
-  const r=await fetch('https://api.goldprice.dev/v1/spot',{headers:{accept:'application/json'}});
-  if(!r.ok) throw new Error('gold '+r.status);
-  const j=await r.json(); const x=(j.symbols||[]).find(s=>s.symbol==='XAU'); if(!x) throw new Error('XAU missing');
-  return {price:Number(x.price),isStale:!!x.is_stale,computedAt:x.computed_at,source:'goldprice.dev'};
+  const providers=[
+    async()=>{
+      const r=await fetch('https://api.gold-api.com/price/XAU',{headers:{accept:'application/json','user-agent':'Mozilla/5.0'}});
+      if(!r.ok) throw new Error('gold-api '+r.status);
+      const j=await r.json();
+      if(!Number.isFinite(Number(j.price))) throw new Error('gold-api price missing');
+      return {price:Number(j.price),isStale:false,computedAt:j.updatedAt||j.updated_at||new Date().toISOString(),source:'gold-api.com'};
+    },
+    async()=>{
+      const r=await fetch('https://xaus.com/api/v1/spot',{headers:{accept:'application/json','user-agent':'Mozilla/5.0'}});
+      if(!r.ok) throw new Error('xaus '+r.status);
+      const j=await r.json(); const p=Number(j?.xau?.price??j?.spot_usd_oz);
+      if(!Number.isFinite(p)) throw new Error('xaus price missing');
+      return {price:p,isStale:j?.data_state?.status==='stale',computedAt:j.updated_at||j?.data_state?.as_of||new Date().toISOString(),source:'xaus.com'};
+    },
+    async()=>{
+      const r=await fetch('https://goldprice.dev/v1/prices?symbol=XAU-USD-SPOT',{headers:{accept:'application/json','user-agent':'Mozilla/5.0'}});
+      if(!r.ok) throw new Error('goldprice.dev '+r.status);
+      const j=await r.json(); const x=(j.symbols||[]).find(s=>s.symbol==='XAU'||s.symbol==='XAU-USD-SPOT')||j.symbols?.[0];
+      if(!x||!Number.isFinite(Number(x.price))) throw new Error('goldprice.dev price missing');
+      return {price:Number(x.price),isStale:!!x.is_stale,computedAt:x.computed_at,source:'goldprice.dev'};
+    }
+  ];
+  let lastErr; for(const fn of providers){try{return await fn()}catch(e){lastErr=e}}
+  throw lastErr||new Error('all gold providers failed');
 }
 async function refresh(){
   try{
     const [ff,price]=await Promise.all([
-      fetch('https://r.jina.ai/https://www.forexfactory.com/calendar?day=today',{headers:{Accept:'text/plain'}}).then(r=>r.text()),
+      fetch('https://r.jina.ai/https://www.forexfactory.com/calendar?day=today',{headers:{Accept:'text/plain','user-agent':'Mozilla/5.0'}}).then(async r=>{if(!r.ok) throw new Error('FF '+r.status);return r.text()}),
       getGold()
     ]);
     const events=parseRows(ff).map(e=>({...e,...classify(e.title,e.actual,e.forecast)}));
@@ -48,7 +69,7 @@ async function refresh(){
 }
 
 app.use(express.static(path.join(__dirname,'public')));
-app.get('/health',(req,res)=>res.json({ok:true,updatedAt:cache.updatedAt}));
-app.get('/api/live',async(req,res)=>{if(!cache.updatedAt) await refresh();res.json({ok:true,version:'V2 AUTO RAILWAY',source:'Forex Factory + goldprice.dev',atrPips:ATR_FALLBACK,...cache});});
+app.get('/health',(req,res)=>res.status(cache.price?200:503).json({ok:!!cache.price,updatedAt:cache.updatedAt,price:cache.price?.price||null,source:cache.price?.source||null}));
+app.get('/api/live',async(req,res)=>{if(!cache.updatedAt) await refresh();res.json({ok:true,version:'V2 AUTO RAILWAY',source:'Forex Factory + multi-provider XAU spot',atrPips:ATR_FALLBACK,...cache});});
 app.get('/api/history',(req,res)=>res.json({ok:true,events:cache.history}));
 app.listen(PORT,()=>{console.log('XAU News Hack Railway on',PORT);refresh();setInterval(refresh,30000);});
