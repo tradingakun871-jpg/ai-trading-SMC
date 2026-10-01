@@ -21,6 +21,7 @@ export function category(title=''){
   if(/retail sales/.test(t)) return 'RETAIL SALES';
   if(/ism manufacturing pmi/.test(t)) return 'ISM MANUFACTURING PMI';
   if(/ism services pmi/.test(t)) return 'ISM SERVICES PMI';
+  if(/fomc member.*speaks|fed member.*speaks/.test(t)) return null;
   if(/fomc|federal funds rate|interest rate decision/.test(t)) return 'FOMC';
   return null;
 }
