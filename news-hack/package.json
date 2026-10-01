@@ -1,0 +1,9 @@
+{
+  "name": "xau-news-hack-v2-auto",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {"start": "node server.js"},
+  "engines": {"node": ">=20"},
+  "dependencies": {"express": "^4.21.2"}
+}
