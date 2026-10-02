@@ -260,9 +260,10 @@ async function refresh(){
   }catch(e){console.error('news refresh failed',e.message);cache={...cache,updatedAt:new Date().toISOString(),newsStatus:'DEGRADED',actualSource:'NONE'}}finally{refreshBusy=false}
 }
 
-app.use(express.static(path.join(__dirname,'public')));
+app.use((req,res,next)=>{res.set('Cache-Control','no-store, no-cache, must-revalidate, proxy-revalidate');res.set('Pragma','no-cache');res.set('Expires','0');next();});
+app.use(express.static(path.join(__dirname,'public'),{etag:false,lastModified:false}));
 app.get('/health',(req,res)=>res.status(cache.price?200:503).json({ok:!!cache.price,updatedAt:cache.updatedAt,newsStatus:cache.newsStatus,actualSource:cache.actualSource,price:cache.price?.price||null,priceSource:cache.price?.source||null,timeZone:'Asia/Jakarta'}));
-app.get('/api/live',async(req,res)=>{if(!cache.updatedAt)await refresh();res.json({ok:true,version:'V2.9 FRESHEST-ACTUAL MULTI-RELAY',source:'Forex Factory freshest-Actual multi-relay + release-time XAU snapshot',refreshSeconds:15,timeZone:'Asia/Jakarta',atrPips:ATR_FALLBACK,...cache})});
+app.get('/api/live',async(req,res)=>{if(!cache.updatedAt)await refresh();res.json({ok:true,version:'V3.0 LIVE NO-CACHE',source:'Forex Factory freshest-Actual multi-relay + release-time XAU snapshot',refreshSeconds:15,timeZone:'Asia/Jakarta',atrPips:ATR_FALLBACK,...cache})});
 app.get('/api/history',(req,res)=>res.json({ok:true,timeZone:'Asia/Jakarta',events:cache.history}));
 app.post('/api/refresh',async(req,res)=>{await refresh();res.json({ok:true,updatedAt:cache.updatedAt,newsStatus:cache.newsStatus,actualSource:cache.actualSource,timeZone:'Asia/Jakarta'})});
 
