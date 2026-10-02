@@ -17,6 +17,9 @@ let weeklyCache = { items:[], fetchedAt:0 };
 let refreshBusy = false;
 let priceSnapshots = [];
 const individualLocks = new Map();
+let lastGoodLiveEvents = [];
+let lastGoodLiveAt = 0;
+const LAST_GOOD_TTL_MS = 6 * 60 * 60 * 1000;
 
 function clean(s=''){ return String(s).replace(/\s+/g,' ').trim(); }
 function normTitle(s=''){ return clean(s).toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(); }
@@ -123,24 +126,84 @@ async function convertEventsToWib(events){
   }catch(e){console.error('WIB conversion failed',e.message);return events.map(x=>({...x,time:'— WIB',eventTime:null,timeZone:'Asia/Jakarta',timeUnmapped:true}))}
 }
 
-async function getForexFactoryJina(){
-  const target=`https://forexfactory.com/calendar?day=${ffDayParam()}`;
-  const r=await fetchTimeout(`https://r.jina.ai/${target}`,{headers:{'X-Return-Format':'html','Accept':'text/html'}},12000);
-  if(!r.ok)throw new Error('FF Jina '+r.status);
-  let events=parseForexFactoryHtml(await r.text()); if(!events.length)throw new Error('FF Jina no tracked rows');
-  events=await convertEventsToWib(events);
-  return {events,status:'LIVE_FOREX_FACTORY',source:'FOREX_FACTORY_JINA_NON_WWW'};
-}
-async function getForexFactoryDirect(){
-  for(const url of [`https://forexfactory.com/calendar?day=${ffDayParam()}`,'https://forexfactory.com/calendar']){
-    try{
-      const r=await fetchTimeout(url,{headers:{accept:'text/html,application/xhtml+xml','accept-language':'en-US,en;q=0.9','user-agent':'Mozilla/5.0'}},7000);
-      if(!r.ok)throw new Error('FF direct '+r.status);
-      let events=parseForexFactoryHtml(await r.text()); if(!events.length)throw new Error('FF direct no rows');
-      events=await convertEventsToWib(events); return {events,status:'LIVE_FOREX_FACTORY',source:'FOREX_FACTORY_DIRECT'};
-    }catch(e){console.error('FF direct attempt failed',e.message)}
+function parseForexFactoryMarkdown(text){
+  const events=[]; let lastTime='';
+  for(const raw of String(text||'').split('\n')){
+    const line=raw.trim();
+    if(!line.includes('|')) continue;
+    const cols=line.split('|').map(x=>clean(x)).filter(Boolean);
+    const usdIdx=cols.findIndex(x=>x==='USD');
+    if(usdIdx<0) continue;
+    const timeCandidate=cols.slice(0,usdIdx).reverse().find(x=>/^(?:\d{1,2}:\d{2}(?:am|pm)?|All Day|Tentative)$/i.test(x));
+    if(timeCandidate) lastTime=timeCandidate;
+    const title=cols.slice(usdIdx+1).find(x=>isTracked(x));
+    if(!title) continue;
+    const ti=cols.indexOf(title);
+    const nums=cols.slice(ti+1).filter(x=>/^[-+]?\d+(?:\.\d+)?%?[KMB]?$/i.test(x));
+    const actual=nums[0]||'', forecast=nums[1]||'', previous=nums[2]||'';
+    const lower=line.toLowerCase();
+    const impact=lower.includes('high')||lower.includes('red')?'High':lower.includes('medium')||lower.includes('orange')?'Medium':lower.includes('low')||lower.includes('yellow')?'Low':'Unknown';
+    events.push({time:lastTime,currency:'USD',impact,title,actual,forecast,previous});
   }
-  throw new Error('FF direct unavailable');
+  return events;
+}
+
+async function tryJinaHtml(target,source){
+  const r=await fetchTimeout('https://r.jina.ai/'+target,{headers:{'X-Return-Format':'html','Accept':'text/html'}},10000);
+  if(!r.ok) throw new Error(source+' '+r.status);
+  const text=await r.text();
+  let events=parseForexFactoryHtml(text);
+  if(!events.length) throw new Error(source+' no rows');
+  events=await convertEventsToWib(events);
+  return {events,status:'LIVE_FOREX_FACTORY',source};
+}
+async function tryJinaMarkdown(target,source){
+  const r=await fetchTimeout('https://r.jina.ai/'+target,{headers:{'Accept':'text/plain'}},10000);
+  if(!r.ok) throw new Error(source+' '+r.status);
+  const text=await r.text();
+  let events=parseForexFactoryMarkdown(text);
+  if(!events.length) throw new Error(source+' no rows');
+  events=await convertEventsToWib(events);
+  return {events,status:'LIVE_FOREX_FACTORY',source};
+}
+async function tryDirect(url,source){
+  const r=await fetchTimeout(url,{headers:{
+    accept:'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'accept-language':'en-US,en;q=0.9',
+    'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36'
+  }},7000);
+  if(!r.ok) throw new Error(source+' '+r.status);
+  let events=parseForexFactoryHtml(await r.text());
+  if(!events.length) throw new Error(source+' no rows');
+  events=await convertEventsToWib(events);
+  return {events,status:'LIVE_FOREX_FACTORY',source};
+}
+async function getForexFactoryLiveMulti(){
+  const day=ffDayParam();
+  const relays=[
+    ()=>tryJinaHtml(`https://forexfactory.com/calendar?day=${day}`,'FF_JINA_HTML_NON_WWW'),
+    ()=>tryJinaMarkdown(`https://forexfactory.com/calendar?day=${day}`,'FF_JINA_MARKDOWN_NON_WWW'),
+    ()=>tryJinaHtml(`http://forexfactory.com/calendar?day=${day}`,'FF_JINA_HTML_HTTP'),
+    ()=>tryJinaHtml(`https://www.forexfactory.com/calendar?day=${day}`,'FF_JINA_HTML_WWW'),
+    ()=>tryDirect(`https://forexfactory.com/calendar?day=${day}`,'FF_DIRECT_NON_WWW'),
+    ()=>tryDirect(`https://www.forexfactory.com/calendar?day=${day}`,'FF_DIRECT_WWW')
+  ];
+  let lastErr=null;
+  for(const relay of relays){
+    try{
+      const out=await relay();
+      lastGoodLiveEvents=out.events;
+      lastGoodLiveAt=Date.now();
+      return out;
+    }catch(e){
+      lastErr=e;
+      console.error('FF relay failed',e.message);
+    }
+  }
+  if(lastGoodLiveEvents.length && Date.now()-lastGoodLiveAt<LAST_GOOD_TTL_MS){
+    return {events:lastGoodLiveEvents,status:'LIVE_FOREX_FACTORY_STALE_CACHE',source:'LAST_GOOD_LIVE_CACHE'};
+  }
+  throw lastErr||new Error('All Forex Factory live relays failed');
 }
 async function getForexFactoryWeekly(){
   const items=await getWeeklyItems(); const today=jakartaDate(); const events=[];
@@ -148,7 +211,11 @@ async function getForexFactoryWeekly(){
   return {events,status:'FOREX_FACTORY_SCHEDULE_ONLY',source:'FOREX_FACTORY_WEEKLY'};
 }
 async function getForexFactory(){
-  try{return await getForexFactoryJina()}catch(e1){console.error('Forex Factory Jina failed',e1.message);try{return await getForexFactoryDirect()}catch(e2){console.error('Forex Factory direct failed',e2.message);return await getForexFactoryWeekly()}}
+  try{return await getForexFactoryLiveMulti()}
+  catch(e){
+    console.error('All Forex Factory live relays failed',e.message);
+    return await getForexFactoryWeekly();
+  }
 }
 
 function buildGroups(events,price){
@@ -178,7 +245,7 @@ async function refresh(){
 
 app.use(express.static(path.join(__dirname,'public')));
 app.get('/health',(req,res)=>res.status(cache.price?200:503).json({ok:!!cache.price,updatedAt:cache.updatedAt,newsStatus:cache.newsStatus,actualSource:cache.actualSource,price:cache.price?.price||null,priceSource:cache.price?.source||null,timeZone:'Asia/Jakarta'}));
-app.get('/api/live',async(req,res)=>{if(!cache.updatedAt)await refresh();res.json({ok:true,version:'V2.7 RELEASE-TIME LOCK',source:'Forex Factory live + release-time XAU snapshot',refreshSeconds:15,timeZone:'Asia/Jakarta',atrPips:ATR_FALLBACK,...cache})});
+app.get('/api/live',async(req,res)=>{if(!cache.updatedAt)await refresh();res.json({ok:true,version:'V2.8 MULTI-RELAY + RELEASE-TIME LOCK',source:'Forex Factory multi-relay + last-good cache + release-time XAU snapshot',refreshSeconds:15,timeZone:'Asia/Jakarta',atrPips:ATR_FALLBACK,...cache})});
 app.get('/api/history',(req,res)=>res.json({ok:true,timeZone:'Asia/Jakarta',events:cache.history}));
 app.post('/api/refresh',async(req,res)=>{await refresh();res.json({ok:true,updatedAt:cache.updatedAt,newsStatus:cache.newsStatus,actualSource:cache.actualSource,timeZone:'Asia/Jakarta'})});
 
