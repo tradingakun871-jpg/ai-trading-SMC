@@ -178,32 +178,49 @@ async function tryDirect(url,source){
   events=await convertEventsToWib(events);
   return {events,status:'LIVE_FOREX_FACTORY',source};
 }
+function liveDatasetScore(out){
+  const now=Date.now();
+  let released=0, releasedWithActual=0, totalActual=0;
+  for(const e of out.events||[]){
+    if(clean(e.actual)) totalActual++;
+    const t=new Date(e.eventTime||'').getTime();
+    if(Number.isFinite(t) && t<=now+60*1000){
+      released++;
+      if(clean(e.actual)) releasedWithActual++;
+    }
+  }
+  // Fresh Actual on already-released events dominates the selection.
+  return releasedWithActual*1000 + totalActual*10 - Math.max(0,released-releasedWithActual)*5;
+}
 async function getForexFactoryLiveMulti(){
   const day=ffDayParam();
+  const minuteBucket=Math.floor(Date.now()/60000);
+  const bust='fflive='+minuteBucket;
   const relays=[
-    ()=>tryJinaHtml(`https://forexfactory.com/calendar?day=${day}`,'FF_JINA_HTML_NON_WWW'),
-    ()=>tryJinaMarkdown(`https://forexfactory.com/calendar?day=${day}`,'FF_JINA_MARKDOWN_NON_WWW'),
-    ()=>tryJinaHtml(`http://forexfactory.com/calendar?day=${day}`,'FF_JINA_HTML_HTTP'),
-    ()=>tryJinaHtml(`https://www.forexfactory.com/calendar?day=${day}`,'FF_JINA_HTML_WWW'),
-    ()=>tryDirect(`https://forexfactory.com/calendar?day=${day}`,'FF_DIRECT_NON_WWW'),
-    ()=>tryDirect(`https://www.forexfactory.com/calendar?day=${day}`,'FF_DIRECT_WWW')
+    ()=>tryJinaHtml(`https://forexfactory.com/calendar?day=${day}&${bust}`,'FF_JINA_HTML_NON_WWW_FRESH'),
+    ()=>tryJinaMarkdown(`https://forexfactory.com/calendar?day=${day}&${bust}`,'FF_JINA_MARKDOWN_NON_WWW_FRESH'),
+    ()=>tryJinaHtml(`http://forexfactory.com/calendar?day=${day}&${bust}`,'FF_JINA_HTML_HTTP_FRESH'),
+    ()=>tryJinaHtml(`https://www.forexfactory.com/calendar?day=${day}&${bust}`,'FF_JINA_HTML_WWW_FRESH'),
+    ()=>tryDirect(`https://forexfactory.com/calendar?day=${day}&${bust}`,'FF_DIRECT_NON_WWW_FRESH'),
+    ()=>tryDirect(`https://www.forexfactory.com/calendar?day=${day}&${bust}`,'FF_DIRECT_WWW_FRESH')
   ];
-  let lastErr=null;
+  const results=[];
   for(const relay of relays){
-    try{
-      const out=await relay();
-      lastGoodLiveEvents=out.events;
-      lastGoodLiveAt=Date.now();
-      return out;
-    }catch(e){
-      lastErr=e;
-      console.error('FF relay failed',e.message);
-    }
+    try{ results.push(await relay()); }
+    catch(e){ console.error('FF relay failed',e.message); }
+  }
+  if(results.length){
+    results.sort((a,b)=>liveDatasetScore(b)-liveDatasetScore(a));
+    const best=results[0];
+    console.log('FF relay selected',best.source,'score',liveDatasetScore(best),'actuals',(best.events||[]).filter(e=>clean(e.actual)).length);
+    lastGoodLiveEvents=best.events;
+    lastGoodLiveAt=Date.now();
+    return best;
   }
   if(lastGoodLiveEvents.length && Date.now()-lastGoodLiveAt<LAST_GOOD_TTL_MS){
     return {events:lastGoodLiveEvents,status:'LIVE_FOREX_FACTORY_STALE_CACHE',source:'LAST_GOOD_LIVE_CACHE'};
   }
-  throw lastErr||new Error('All Forex Factory live relays failed');
+  throw new Error('All Forex Factory live relays failed');
 }
 async function getForexFactoryWeekly(){
   const items=await getWeeklyItems(); const today=jakartaDate(); const events=[];
@@ -245,7 +262,7 @@ async function refresh(){
 
 app.use(express.static(path.join(__dirname,'public')));
 app.get('/health',(req,res)=>res.status(cache.price?200:503).json({ok:!!cache.price,updatedAt:cache.updatedAt,newsStatus:cache.newsStatus,actualSource:cache.actualSource,price:cache.price?.price||null,priceSource:cache.price?.source||null,timeZone:'Asia/Jakarta'}));
-app.get('/api/live',async(req,res)=>{if(!cache.updatedAt)await refresh();res.json({ok:true,version:'V2.8 MULTI-RELAY + RELEASE-TIME LOCK',source:'Forex Factory multi-relay + last-good cache + release-time XAU snapshot',refreshSeconds:15,timeZone:'Asia/Jakarta',atrPips:ATR_FALLBACK,...cache})});
+app.get('/api/live',async(req,res)=>{if(!cache.updatedAt)await refresh();res.json({ok:true,version:'V2.9 FRESHEST-ACTUAL MULTI-RELAY',source:'Forex Factory freshest-Actual multi-relay + release-time XAU snapshot',refreshSeconds:15,timeZone:'Asia/Jakarta',atrPips:ATR_FALLBACK,...cache})});
 app.get('/api/history',(req,res)=>res.json({ok:true,timeZone:'Asia/Jakarta',events:cache.history}));
 app.post('/api/refresh',async(req,res)=>{await refresh();res.json({ok:true,updatedAt:cache.updatedAt,newsStatus:cache.newsStatus,actualSource:cache.actualSource,timeZone:'Asia/Jakarta'})});
 
